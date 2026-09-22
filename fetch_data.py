@@ -39,14 +39,19 @@ def human(n):
         n /= 1024.0
 
 
-def download(url, dest, expect, force=False):
-    """带进度输出的下载；已存在且大小合理则跳过。"""
+def download(url, name, expect, force=False):
+    """带进度输出的下载；已存在且大小合理则跳过。
+
+    注意 name 只是文件名，落地路径在这里拼 —— 早期版本把裸文件名当成了目标路径，
+    os.path.dirname() 得到空串，makedirs('') 直接抛 FileNotFoundError。
+    """
+    dest = os.path.join(DATA, name)
     if os.path.exists(dest) and not force:
         size = os.path.getsize(dest)
         if size >= expect * 0.9:
-            print("  跳过（已存在 %s）：%s" % (human(size), os.path.basename(dest)))
+            print("  跳过（已存在 %s）：%s" % (human(size), name))
             return True
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    os.makedirs(DATA, exist_ok=True)
     tmp = dest + ".part"
     print("  下载 %s ..." % os.path.basename(dest))
     try:
