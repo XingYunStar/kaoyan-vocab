@@ -360,6 +360,20 @@ def main():
     p = conn.execute("SELECT COUNT(*) FROM words WHERE pos_json IS NOT NULL").fetchone()[0]
     e = conn.execute("SELECT COUNT(*) FROM words WHERE examples IS NOT NULL").fetchone()[0]
     print("words 表共 %d 词（基础功能词 %d 个；词性释义 %d 个；例句 %d 个）" % (n, b, p, e))
+
+    missing = [name for name, path in (("cmudict.dict 音标", CMU_PATH),
+                                       ("ecdict.csv 词性释义", ECDICT_PATH),
+                                       ("cmn.txt 例句", EXAMPLES_PATH))
+               if not os.path.exists(path)]
+    if missing:
+        print()
+        print("!" * 60)
+        print("! 数据源缺失，词库是不完整的：")
+        for m in missing:
+            print("!   - " + m)
+        print("! 请先运行：  python fetch_data.py")
+        print("! 下载完成后重跑本脚本即可（学习进度不受影响）。")
+        print("!" * 60)
     for t, c in conn.execute(
             "SELECT tier, COUNT(*) FROM words GROUP BY tier ORDER BY COUNT(*) DESC"):
         print("   %-16s %d" % (t, c))
