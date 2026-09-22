@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------- 个人数据
+# 学习进度、笔记、复习记录、统计 —— 这些是你的私人数据，不随代码发布
+data/vocab.db
+data/vocab.db-wal
+data/vocab.db-shm
+
+# ---------------------------------------------------------- 第三方大文件
+# 共 ~74 MB，用 `python fetch_data.py` 重新下载即可（见 README「数据获取」）
+data/cmudict.dict
+data/ecdict.csv
+data/cmn.txt
+data/*.zip
+data/_about.txt
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ------------------------------------------------------------ 编辑器/系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>考研单词背诵系统</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23b3261e'/><text x='16' y='23' font-size='19' font-family='Georgia' fill='white' text-anchor='middle'>A</text></svg>">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="seal">A</div>
+      <div><b>考研单词</b><span>NETEM VOCABULARY</span></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-sep"></div>
+    <div class="countdown-mini" id="sideCount"></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="menuBtn" style="display:none" title="菜单">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <div>
+        <h1 id="pageTitle">今日</h1>
+        <div class="sub" id="pageSub"></div>
+      </div>
+      <div class="spacer"></div>
+      <div class="row" id="topStats"></div>
+      <button class="icon-btn" id="themeBtn" title="切换白/夜主题"></button>
+    </header>
+    <div id="view"></div>
+  </main>
+</div>
+<div class="nav-scrim" id="navScrim"></div>
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+<script src="/app.js"></script>
+</body>
+</html>
