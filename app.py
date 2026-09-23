@@ -108,12 +108,19 @@ def bump_daily(**fields):
 
 # ----------------------------------------------------------------- 进度
 def ensure_round(word_id, rnd):
+    """确保 (word_id, round) 有进度行，返回它。
+
+    用 INSERT OR IGNORE 而不是「先 SELECT 再 INSERT」：并发请求下后者会有一个
+    观测窗口，两个请求都查到「没有」然后都去插，后一个撞 UNIQUE 约束抛
+    IntegrityError（前端连点评级就是这么触发的）。OR IGNORE 让插入变成幂等操作，
+    竞态下也只是有一方「什么都没插」，随后 SELECT 一样能拿到那一行。
+    """
     row = db().execute("SELECT * FROM progress WHERE word_id=? AND round=?",
                        (word_id, rnd)).fetchone()
     if row:
         return row
-    db().execute("INSERT INTO progress(word_id,round,state,due) VALUES (?,?,'new',?)",
-                 (word_id, rnd, srs.iso(srs.now())))
+    db().execute("INSERT OR IGNORE INTO progress(word_id,round,state,due)"
+                 " VALUES (?,?,'new',?)", (word_id, rnd, srs.iso(srs.now())))
     db().commit()
     return db().execute("SELECT * FROM progress WHERE word_id=? AND round=?",
                         (word_id, rnd)).fetchone()
@@ -372,10 +379,13 @@ def api_answer():
         nxt = db().execute("SELECT * FROM progress WHERE word_id=? AND round=?",
                            (word_id, rnd + 1)).fetchone()
         if not nxt:
-            db().execute("INSERT INTO progress(word_id,round,state,due) VALUES (?,?,'new',?)",
-                         (word_id, rnd + 1, srs.iso(srs.now())))
+            # 同样是「先查后插」，并发下会撞唯一约束，用 OR IGNORE 兜住
+            cur = db().execute("INSERT OR IGNORE INTO progress(word_id,round,state,due)"
+                               " VALUES (?,?,'new',?)",
+                               (word_id, rnd + 1, srs.iso(srs.now())))
             db().commit()
-            unlocked = rnd + 1
+            if cur.rowcount:
+                unlocked = rnd + 1
 
     is_fresh = (p["state"] == "new" and p["reps"] == 0)
     bump_daily(**({"new_count": 1} if is_fresh else {"review_count": 1}),

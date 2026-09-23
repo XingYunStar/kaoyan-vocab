@@ -270,7 +270,7 @@ function card(inner) { return h('div', { class: 'card pad' }, inner); }
 function startSession(mode) {
   S.mode = mode;
   S.queue = []; S.revealed = false;
-  S.settled = 0; S.attempts = 0; S.total = 0;
+  S.settled = 0; S.attempts = 0; S.total = 0; S.grading = false;
   S.stats = { again: 0, hard: 0, good: 0, easy: 0 };
   setTitle(mode === 'review' ? '复习' : '背新词', '正在取词…');
   $('#view').innerHTML = h('div', { class: 'view' }, h('div', { class: 'empty' }, '加载中…'));
@@ -527,14 +527,34 @@ function checkSpelling() {
   }
 }
 
+/* 提交期间锁住评级按钮：既是视觉反馈，也避免键盘/连点重复提交 */
+function lockGrades(on) {
+  var btns = document.querySelectorAll('.grade');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].disabled = !!on;
+    btns[i].classList.toggle('busy', !!on);
+  }
+}
+
 function grade(rating) {
+  // 防重入。连点会并发发出多个 POST：它们全都 .then 成功时，
+  // 每个回调都会 shift() 一次，于是把后面几张「还没答过」的卡悄悄跳过。
+  // 撞上已有进度行的卡（重做卡、复习卡）就一定会全部成功，比新卡更危险。
+  if (S.grading) return;
   var card = S.queue[0];
   if (!card) return;
+  S.grading = true;
+  lockGrades(true);
+  // 兜底：万一请求一直不回来，15 秒后自动解锁，别把人卡死
+  var guard = setTimeout(function () { S.grading = false; lockGrades(false); }, 15000);
+
   var ms = S.startedAt ? (Date.now() - S.startedAt) : 0;
-  S.stats[rating] = (S.stats[rating] || 0) + 1;
-  S.attempts++;
   api('/api/answer', { method: 'POST', body: { word_id: card.id, round: card.round, rating: rating, ms: ms } })
     .then(function (r) {
+      clearTimeout(guard);
+      // 计数放在成功之后：请求失败不该让「作答次数」虚高
+      S.stats[rating] = (S.stats[rating] || 0) + 1;
+      S.attempts++;
       if (r.unlocked_round) toast('第 ' + (r.unlocked_round - 1) + ' 轮毕业，已解锁第 ' + r.unlocked_round + ' 轮');
       S.queue.shift();                       // 当前这张先出队
       if (rating === 'good' || rating === 'easy') {
@@ -549,11 +569,17 @@ function grade(rating) {
       }
       S.startedAt = Date.now();
       S.revealed = false;
+      S.grading = false;
       if (!S.queue.length) { renderSummary(); return; }
-      renderCard();
+      renderCard();                          // 重建 DOM，按钮自然是可用的
       refreshBoot(true);
     })
-    .catch(function (e) { toast('提交失败：' + e.message); });
+    .catch(function (e) {
+      clearTimeout(guard);
+      S.grading = false;
+      lockGrades(false);                     // 失败时把按钮放回来，让用户重试
+      toast('提交失败：' + e.message + '　可以再点一次', 3000);
+    });
 }
 
 function renderSummary() {
