@@ -170,7 +170,7 @@ function go(route) {
     try { history.replaceState(null, '', '#' + route); } catch (e) { location.hash = route; }
   }
   S.route = route;
-  S.queue = []; S.idx = 0;
+  S.queue = []; S.settled = 0; S.attempts = 0; S.total = 0;
   $('#sidebar').classList.remove('open');
   renderNav();
   if (route === 'today') renderToday();
@@ -269,7 +269,8 @@ function card(inner) { return h('div', { class: 'card pad' }, inner); }
 /* ------------------------------------------------------------- 学习会话 */
 function startSession(mode) {
   S.mode = mode;
-  S.queue = []; S.idx = 0; S.revealed = false;
+  S.queue = []; S.revealed = false;
+  S.settled = 0; S.attempts = 0; S.total = 0;
   S.stats = { again: 0, hard: 0, good: 0, easy: 0 };
   setTitle(mode === 'review' ? '复习' : '背新词', '正在取词…');
   $('#view').innerHTML = h('div', { class: 'view' }, h('div', { class: 'empty' }, '加载中…'));
@@ -388,18 +389,30 @@ function buildPrompt(card) {
   return { kind: 'recognize', text: '', hint: '看词说义 — 按空格显示答案' };
 }
 
+/* 队列里还有多少张「重做」卡（评过忘了/模糊，尚未掌握） */
+function redoCount() {
+  var n = 0;
+  for (var i = 0; i < S.queue.length; i++) {
+    if (S.queue[i] && S.queue[i].retries) n++;
+  }
+  return n;
+}
+
 function renderCard() {
-  var card = S.queue[S.idx];
+  var card = S.queue[0];
   if (!card) { renderSummary(); return; }
-  var pctDone = S.total ? Math.round(S.idx / Math.max(S.total, 1) * 100) : 0;
+  // 进度只统计「已掌握」的卡片：重复做同一张不会推进进度，分子分母都不会超过总词数
+  var pctDone = S.total ? Math.round(S.settled / S.total * 100) : 0;
   var pr = buildPrompt(card);
-  setTitle(S.mode === 'review' ? '复习' : '背新词', roundLabel(card.round) + ' · ' + (S.idx + 1) + ' / ' + S.total);
+  setTitle(S.mode === 'review' ? '复习' : '背新词',
+    roundLabel(card.round) + ' · 已掌握 ' + S.settled + ' / ' + S.total);
 
   var head = h('div', { class: 'head' },
     h('span', { class: 'tag r' + clamp(card.round, 1, 3) }, roundLabel(card.round)) +
     h('span', { class: 'tag tier' }, esc(card.tier || '')) +
     (card.freq ? h('span', { class: 'tag tier' }, '词频 ' + num(card.freq)) : '') +
     (card.state === 'new' ? h('span', { class: 'tag tier' }, '首次') : '') +
+    (card.retries ? h('span', { class: 'tag retry' }, '重做 ×' + card.retries) : '') +
     h('span', { class: 'spacer' }) +
     h('button', { class: 'icon-btn', id: 'starBtn', title: '收藏 (S)' },
       '<svg viewBox="0 0 24 24" fill="' + (card.starred ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.7 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3 6.5 20.2l1.1-6.2L3 9.6l6.3-.9z"/></svg>'));
@@ -456,7 +469,8 @@ function renderCard() {
         h('div', { class: 'fb', id: 'spellFb' }, esc(pr.hint)));
     }
   } else {
-    var g = [['again', '忘了', '1'], ['hard', '模糊', '2'], ['good', '记得', '3'], ['easy', '简单', '4']];
+    var g = [['again', '忘了', '1 · 重来'], ['hard', '模糊', '2 · 重来'],
+             ['good', '记得', '3 · 掌握'], ['easy', '简单', '4 · 掌握']];
     footer = h('div', { class: 'grades' }, g.map(function (x) {
       return h('button', { class: 'grade', 'data-r': x[0] },
         h('span', { class: 'g' }, x[1]) + h('span', { class: 'n' }, x[2]));
@@ -464,15 +478,17 @@ function renderCard() {
     h('div', { class: 'muted center', style: 'font-size:12px;margin-top:12px' },
       '当前间隔 ' + (card.interval ? card.interval.toFixed(1) + ' 天' : '新卡') +
       ' · 难度系数 ' + (card.ease || 2.5).toFixed(2) +
-      ' · 已连对 ' + (card.reps || 0) + ' 次');
+      ' · 已连对 ' + (card.reps || 0) + ' 次') +
+    h('div', { class: 'muted center', style: 'font-size:11.5px;margin-top:6px' },
+      '「忘了 / 模糊」会排到队尾再来一次，直到选「记得 / 简单」才算掌握；它们同时已进入间隔复习');
   }
 
   $('#view').innerHTML = h('div', { class: 'view' },
     h('div', { class: 'study-wrap' },
       h('div', { class: 'session-bar' },
-        h('span', { class: 'cnt' }, (S.idx) + '/' + S.total),
+        h('span', { class: 'cnt' }, '已掌握 ' + S.settled + '/' + S.total),
         h('div', { class: 'track' }, h('i', { style: 'width:' + pctDone + '%' })),
-        h('span', { class: 'cnt' }, '对 ' + (S.stats.good + S.stats.easy) + ' · 错 ' + (S.stats.again + S.stats.hard))) +
+        h('span', { class: 'cnt' }, redoCount() ? ('待重做 ' + redoCount()) : ('答了 ' + S.attempts + ' 次'))) +
       h('div', { class: 'flash' }, head + body + reveal + footer)));
 
   if (card.round === 1 && !card.enriched) enrich(card.id);
@@ -493,7 +509,7 @@ function speakerIcon() {
 }
 
 function checkSpelling() {
-  var card = S.queue[S.idx];
+  var card = S.queue[0];
   var input = $('#spellInput');
   if (!card || !input) return;
   var val = (input.value || '').trim().toLowerCase();
@@ -512,21 +528,28 @@ function checkSpelling() {
 }
 
 function grade(rating) {
-  var card = S.queue[S.idx];
+  var card = S.queue[0];
   if (!card) return;
   var ms = S.startedAt ? (Date.now() - S.startedAt) : 0;
   S.stats[rating] = (S.stats[rating] || 0) + 1;
+  S.attempts++;
   api('/api/answer', { method: 'POST', body: { word_id: card.id, round: card.round, rating: rating, ms: ms } })
     .then(function (r) {
       if (r.unlocked_round) toast('第 ' + (r.unlocked_round - 1) + ' 轮毕业，已解锁第 ' + r.unlocked_round + ' 轮');
-      card.round = card.round;
-      var follow = Object.assign({}, card);
-      follow.round = card.round;
-      S.idx++;
-      if (rating === 'again') { follow.requeued = true; S.queue.push(follow); }
+      S.queue.shift();                       // 当前这张先出队
+      if (rating === 'good' || rating === 'easy') {
+        S.settled++;                         // 只有「记得 / 简单」才算掌握
+      } else {
+        // 「忘了 / 模糊」：原样排到队尾，本次会话内一定会再出现，次数不限，
+        // 直到选「记得 / 简单」为止。同一次作答已经通过 /api/answer 进了间隔复习队列，
+        // 所以即使这次会话中断，以后复习也会遇到它。
+        var redo = Object.assign({}, card);
+        redo.retries = (card.retries || 0) + 1;
+        S.queue.push(redo);
+      }
       S.startedAt = Date.now();
       S.revealed = false;
-      if (S.idx >= S.queue.length) { renderSummary(); return; }
+      if (!S.queue.length) { renderSummary(); return; }
       renderCard();
       refreshBoot(true);
     })
@@ -538,7 +561,7 @@ function renderSummary() {
     h('div', { class: 'card pad' },
       h('div', { class: 'empty' },
         h('div', { class: 'big' }, '本轮完成'),
-        h('p', null, '共处理 ' + S.total + ' 张卡片'),
+        h('p', null, S.total + ' 张卡片全部掌握 · 共作答 ' + S.attempts + ' 次'),
         h('div', { class: 'grid g4 mt20', style: 'text-align:left' },
           statCard('忘了', num(S.stats.again), '', '') +
           statCard('模糊', num(S.stats.hard), '', '') +
@@ -904,7 +927,7 @@ document.addEventListener('click', function (e) {
   var t = e.target.closest ? e.target.closest('[data-go]') : null;
   if (t) { go(t.getAttribute('data-go')); return; }
   var a = e.target.closest ? e.target.closest('[data-audio]') : null;
-  if (a) { var c = S.queue[S.idx]; if (c) playCard(c, a.getAttribute('data-audio')); return; }
+  if (a) { var c = S.queue[0]; if (c) playCard(c, a.getAttribute('data-audio')); return; }
   var g = e.target.closest ? e.target.closest('.grade') : null;
   if (g) { grade(g.getAttribute('data-r')); return; }
   // 注意：这些按钮内部都有 <svg>/<span>，点图标时 e.target 是子元素而不是按钮本身，
@@ -945,11 +968,11 @@ document.addEventListener('keydown', function (e) {
   if (!S.revealed) return;
   var map = { '1': 'again', '2': 'hard', '3': 'good', '4': 'easy' };
   if (map[e.key]) { e.preventDefault(); grade(map[e.key]); return; }
-  if (e.key === 'a' || e.key === 'A') { e.preventDefault(); playCard(S.queue[S.idx], e.shiftKey ? 'uk' : 'us'); return; }
+  if (e.key === 'a' || e.key === 'A') { e.preventDefault(); playCard(S.queue[0], e.shiftKey ? 'uk' : 'us'); return; }
   if (e.key === 's' || e.key === 'S') { e.preventDefault(); toggleStar(); return; }
 });
 function toggleStar() {
-  var c = S.queue[S.idx];
+  var c = S.queue[0];
   if (!c) return;
   c.starred = c.starred ? 0 : 1;
   api('/api/note', { method: 'POST', body: { word_id: c.id, starred: c.starred } })
