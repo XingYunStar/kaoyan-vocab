@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ecdict as ec
 import examples as exm
 import mnemonic as mn
+import mnemonic_ext as mx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(HERE, "data", "vocab.db")
@@ -27,6 +28,7 @@ if not os.path.exists(CSV_PATH):
 CMU_PATH = os.path.join(HERE, "data", "cmudict.dict")
 ECDICT_PATH = os.path.join(HERE, "data", "ecdict.csv")
 EXAMPLES_PATH = os.path.join(HERE, "data", "cmn.txt")
+MNEMONIC_DIR = os.path.join(HERE, "data", "mnemonics")
 
 # ------------------------------------------------------------------ ARPAbet -> IPA
 ARPABET = {
@@ -124,7 +126,10 @@ CREATE TABLE IF NOT EXISTS words (
     pos_primary TEXT,
     pos_ratio   TEXT,
     pos_json    TEXT,
-    examples    TEXT
+    examples    TEXT,
+    mnemonic_ext TEXT,
+    ai_mnemonic TEXT,
+    ai_mnemonic_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_words_base ON words(base);
 CREATE INDEX IF NOT EXISTS idx_words_tier ON words(tier);
@@ -214,6 +219,11 @@ DEFAULT_SETTINGS = {
     "tiers": json.dumps(["核心高频", "高频"], ensure_ascii=False),
     "skip_basic": "1",
     "show_pos": "1",
+    # AI 助记（在「设置」里填 API Key 后启用；默认走 DeepSeek）
+    "ai_enabled": "1",
+    "ai_base_url": "https://api.deepseek.com/v1",
+    "ai_model": "deepseek-chat",
+    "ai_key": "",
     "batch_size": "20",
     "theme": "auto",
     "accent": "#c0392b",
@@ -235,7 +245,8 @@ def main():
     if "basic" not in cols:
         conn.execute("ALTER TABLE words ADD COLUMN basic INTEGER DEFAULT 0")
         conn.commit()
-    for col in ("pos_primary", "pos_ratio", "pos_json", "examples"):
+    for col in ("pos_primary", "pos_ratio", "pos_json", "examples",
+                "mnemonic_ext", "ai_mnemonic", "ai_mnemonic_at"):
         if col not in cols:
             conn.execute("ALTER TABLE words ADD COLUMN %s TEXT" % col)
             conn.commit()
@@ -289,6 +300,14 @@ def main():
     else:
         print("! 未找到 data/cmn.txt，跳过例句（下载后重跑本脚本即可）")
 
+    # ---------- 外部助记解析（vxiaozhi/vocabulary-book-by-deepseek, Apache-2.0）----------
+    mnem = {}
+    if os.path.isdir(MNEMONIC_DIR):
+        mnem = mx.load_dir(MNEMONIC_DIR, wanted=set(words_all))
+        print("助记解析命中 %d / %d" % (len(mnem), len(words_all)))
+    else:
+        print("! 未找到 data/mnemonics/，跳过助记解析（python fetch_extras.py 可下载）")
+
     rows = []
     hit = 0
     pos_hit = 0
@@ -326,14 +345,15 @@ def main():
             pos_ratio,
             json.dumps(groups, ensure_ascii=False) if groups else None,
             json.dumps(exs[word], ensure_ascii=False) if word in exs else None,
+            json.dumps(mnem[word], ensure_ascii=False) if word in mnem else None,
         ))
     print("音标命中 %d / %d，词性释义命中 %d / %d" % (hit, len(rows), pos_hit, len(rows)))
 
     conn.executemany(
         """INSERT INTO words (rank,word,freq,tier,meaning,category,subcategory,
                               collocation,alt,remark,phonetic_us,base,root,basic,
-                              pos_primary,pos_ratio,pos_json,examples)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                              pos_primary,pos_ratio,pos_json,examples,mnemonic_ext)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(word) DO UPDATE SET
              rank=excluded.rank, freq=excluded.freq, tier=excluded.tier,
              meaning=excluded.meaning, category=excluded.category,
@@ -343,7 +363,8 @@ def main():
              base=excluded.base, root=excluded.root, basic=excluded.basic,
              pos_primary=excluded.pos_primary, pos_ratio=excluded.pos_ratio,
              pos_json=COALESCE(excluded.pos_json, words.pos_json),
-             examples=COALESCE(excluded.examples, words.examples)""",
+             examples=COALESCE(excluded.examples, words.examples),
+             mnemonic_ext=COALESCE(excluded.mnemonic_ext, words.mnemonic_ext)""",
         rows,
     )
     conn.commit()
@@ -359,7 +380,8 @@ def main():
     b = conn.execute("SELECT COUNT(*) FROM words WHERE basic=1").fetchone()[0]
     p = conn.execute("SELECT COUNT(*) FROM words WHERE pos_json IS NOT NULL").fetchone()[0]
     e = conn.execute("SELECT COUNT(*) FROM words WHERE examples IS NOT NULL").fetchone()[0]
-    print("words 表共 %d 词（基础功能词 %d 个；词性释义 %d 个；例句 %d 个）" % (n, b, p, e))
+    mm = conn.execute("SELECT COUNT(*) FROM words WHERE mnemonic_ext IS NOT NULL").fetchone()[0]
+    print("words 表共 %d 词（功能词 %d；词性 %d；例句 %d；深度助记 %d）" % (n, b, p, e, mm))
 
     missing = [name for name, path in (("cmudict.dict 音标", CMU_PATH),
                                        ("ecdict.csv 词性释义", ECDICT_PATH),

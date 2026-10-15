@@ -54,8 +54,17 @@ function api(path, opts) {
   if (opts.body) cfg.body = JSON.stringify(opts.body);
   if (opts.method) cfg.method = opts.method;
   return fetch(path, cfg).then(function (r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
+    // 服务端出错时会带 {"error": "..."}，把它取出来当成异常消息，
+    // 否则前端只能看到一句 "HTTP 502"，用户不知道发生了什么
+    return r.json().catch(function () { return null; }).then(function (body) {
+      if (!r.ok) {
+        var msg = (body && (body.error || body.message)) || ('HTTP ' + r.status);
+        var err = new Error(msg);
+        err.body = body;
+        throw err;
+      }
+      return body;
+    });
   });
 }
 
@@ -363,6 +372,115 @@ function exampleBlock(card, limit) {
     (list.length > limit ? h('div', { class: 'ex-more muted' }, '共 ' + list.length + ' 条') : ''));
 }
 
+/* 助记插图：图片在本地 data/word_imgs/ 下，由 /imgs/ 路由提供 */
+function imageBlock(card) {
+  if (!card || !card.has_image) return '';
+  var w = String(card.word || '');
+  var url = '/imgs/' + encodeURIComponent(w[0].toLowerCase()) + '/' + encodeURIComponent(w) + '.jpg';
+  var cap = card.mnemonic_ext && card.mnemonic_ext.draw_explain;
+  return h('div', { class: 'mn-imgbox' },
+    h('img', { class: 'mn-img', src: url, alt: w, loading: 'lazy',
+               onerror: 'this.closest(\'.mn-imgbox\').style.display=\'none\'' }) +
+    (cap ? h('div', { class: 'mn-imgcap' }, esc(compactText(cap, 150))) : ''));
+}
+
+/* 外部深度助记：默认只露词根/词缀两节，其余收进「完整解析」 */
+function extBlock(card, openAll) {
+  var ex = card && card.mnemonic_ext;
+  if (!ex || !ex.sections || !ex.sections.length) return '';
+  var secs = ex.sections;
+  var head = openAll ? secs : secs.filter(function (s) {
+    return ['词根分析', '词缀分析'].indexOf(s.title) >= 0;
+  });
+  if (!head.length) head = secs.slice(0, 2);
+  var rest = secs.filter(function (s) { return head.indexOf(s) < 0; });
+
+  var body = head.map(function (s) { return secHtml(s.title, s.body); }).join('');
+  var fold = rest.length
+    ? h('div', { class: 'fold', 'data-open': '0' },
+        h('div', { class: 'fold-body' }, rest.map(function (s) { return secHtml(s.title, s.body); }).join('')) +
+        // 注意：不能带 .more 类 —— 事件委托里 .more 是「展开全部 N 义」的分支，
+        // 会先一步把这颗按钮吃掉，导致折叠区永远点不开
+        h('button', { class: 'fold-head', type: 'button' },
+          h('span', { class: 't-more' }, '完整解析（还有 ' + rest.length + ' 节）') +
+          h('span', { class: 't-less' }, '收起')))
+    : '';
+  return h('div', { class: 'mn mn-ext' }, h('h5', null, '词根词缀 · 深度解析'), body, fold);
+}
+
+function secHtml(title, body) {
+  return h('div', { class: 'ext-sec' },
+    h('div', { class: 'ext-title' }, esc(title)) +
+    h('div', { class: 'ext-body' }, mdLite(body)));
+}
+
+/* 极简 markdown：只处理加粗、列表、换行——够用且不引入解析库 */
+function mdLite(md) {
+  var t = esc(md || '');
+  t = t.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  var lines = t.split('\n');
+  var out = [], buf = [];
+  function flush() {
+    if (buf.length) { out.push('<ul>' + buf.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>'); buf = []; }
+  }
+  lines.forEach(function (ln) {
+    var m = ln.match(/^\s*[-*]\s+(.*)$/);
+    if (m) { buf.push(m[1]); return; }
+    flush();
+    if (ln.trim()) out.push('<p>' + ln + '</p>');
+  });
+  flush();
+  return out.join('');
+}
+
+function compactText(s, n) {
+  var t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
+
+/* AI 助记：按钮 + 结果区 */
+function aiBlock(card) {
+  var has = card.ai_mnemonic && card.ai_mnemonic.length;
+  return h('div', { class: 'mn mn-ai' },
+    h('h5', null, 'AI 助记'),
+    h('div', { class: 'ai-head' },
+      h('button', { class: 'btn sm', id: 'aiBtn', type: 'button',
+                    'data-ai': card.id },
+        has ? '重新生成' : '让 AI 给几种助记'),
+      h('span', { class: 'muted', style: 'font-size:11.5px' }, has ? '已生成，可刷新' : '需要先在设置里配置 API')),
+    h('div', { id: 'aiResult', class: 'ai-result' },
+      has ? aiKindsHtml(card.ai_mnemonic) : ''));
+}
+
+function aiKindsHtml(kinds) {
+  return kinds.map(function (k) {
+    return h('div', { class: 'ai-kind' },
+      h('span', { class: 'ai-type' }, esc(k.type || '助记')) +
+      h('span', { class: 'ai-text' }, esc(k.content || '')));
+  }).join('');
+}
+
+function runAi(wordId, refresh) {
+  var box = $('#aiResult');
+  if (!box) return;
+  var btn = $('#aiBtn');
+  if (btn) { btn.disabled = true; }
+  box.innerHTML = h('div', { class: 'muted', style: 'font-size:12.5px;padding:6px 0' }, '正在请求 AI 生成助记…');
+  api('/api/ai-mnemonic', { method: 'POST', body: { word_id: wordId, refresh: !!refresh } })
+    .then(function (r) {
+      if (!r || !r.ok) {
+        box.innerHTML = h('div', { class: 'ai-err' }, esc((r && r.error) || '生成失败'));
+      } else {
+        box.innerHTML = aiKindsHtml(r.kinds || []) +
+          (r.cached ? h('div', { class: 'muted', style: 'font-size:11px;margin-top:6px' }, '（缓存结果）') : '');
+      }
+    })
+    .catch(function (e) {
+      box.innerHTML = h('div', { class: 'ai-err' }, esc('生成失败：' + (e.message || e)));
+    })
+    .then(function () { if (btn) btn.disabled = false; });
+}
+
 function roundLabel(r) {
   return r === 1 ? '第 1 轮 · 识记' : r === 2 ? '第 2 轮 · 拼写' : r === 3 ? '第 3 轮 · 运用' : '第 ' + r + ' 轮';
 }
@@ -442,6 +560,9 @@ function renderCard() {
       (pr.kind === 'recognize' ? h('div', { class: 'meaning' }, esc(card.meaning)) : h('div', { class: 'meaning', style: 'font-size:16px' }, esc(card.meaning))) +
       ((S.boot.settings.show_pos !== false) ? posBlock(card, 4) : '') +
       exampleBlock(card, 2) +
+      imageBlock(card) +
+      extBlock(card) +
+      aiBlock(card) +
       h('div', { class: 'meta' },
         (card.category ? h('span', { class: 'chip acc' }, esc(card.category)) : '') +
         (card.subcategory ? h('span', { class: 'chip' }, esc(card.subcategory)) : '') +
@@ -696,6 +817,9 @@ function showWord(id) {
       h('div', { class: 'meaning mt14', style: 'font-size:18px' }, esc(w.meaning)) +
       (w.pos && w.pos.length ? h('div', { class: 'mn mt14' }, h('h5', null, '按词性释义'), posBlock(w, 8)) : '') +
       (w.examples && w.examples.length ? h('div', { class: 'mn mt14' }, exampleBlock(w, 3)) : '') +
+      imageBlock(w) +
+      extBlock(w, false) +
+      aiBlock(w) +
       h('div', { class: 'meta mt8' },
         (w.tier ? h('span', { class: 'chip acc' }, esc(w.tier)) : '') +
         (w.freq ? h('span', { class: 'chip' }, '词频 ' + num(w.freq)) : '') +
@@ -861,6 +985,30 @@ function renderSettings() {
       row('优先使用在线真人发音', '有真人录音时优先播放，没有则回退到浏览器合成音',
         h('input', { type: 'checkbox', id: 'stReal', checked: S.preferReal ? true : null })));
 
+    var aiBox = h('div', { class: 'card pad mt20' },
+      h('h3', null, 'AI 助记') +
+      h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 14px' },
+        '配置一个大模型接口后，学习卡上会出现「让 AI 给几种助记」按钮。' +
+        '默认走 DeepSeek，任何 OpenAI 兼容接口都能用（把地址换成对应的 /v1 即可）。' +
+        '生成的助记会存在本地数据库，重复查看不会再消耗额度。') +
+      h('div', { class: 'ai-grid' },
+        h('label', { class: 'fld full' },
+          h('b', null, '启用 AI 助记'),
+          h('span', { class: 'row' },
+            h('input', { type: 'checkbox', id: 'stAiOn', checked: st.ai_enabled ? true : null }),
+            h('small', null, '关掉后卡片上不显示 AI 按钮'))) +
+        h('label', { class: 'fld' },
+          h('b', null, 'API 地址'),
+          h('input', { type: 'text', id: 'stAiUrl', value: esc(st.ai_base_url || ''), placeholder: 'https://api.deepseek.com/v1' })) +
+        h('label', { class: 'fld' },
+          h('b', null, '模型'),
+          h('input', { type: 'text', id: 'stAiModel', value: esc(st.ai_model || ''), placeholder: 'deepseek-chat' })) +
+        h('label', { class: 'fld full' },
+          h('b', null, 'API Key'),
+          h('input', { type: 'password', id: 'stAiKey', autocomplete: 'off',
+                       placeholder: st.ai_key_set ? '（已保存，留空表示不修改）' : 'sk-...' }),
+          h('small', null, '只存在本地 data/vocab.db，不会回显也不会外传。'))));
+
     var tierBox = h('div', { class: 'card pad mt20' },
       h('h3', null, '参与学习的梯队'),
       h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 12px' },
@@ -880,7 +1028,7 @@ function renderSettings() {
       h('p', { class: 'muted', style: 'font-size:12px;margin-top:10px' },
         '数据保存在本地 SQLite：kaoyan-vocab/data/vocab.db。备份该文件即可迁移。'));
 
-    $('#view').innerHTML = h('div', { class: 'view narrow' }, body + tierBox + dataBox +
+    $('#view').innerHTML = h('div', { class: 'view narrow' }, body + aiBox + tierBox + dataBox +
       h('div', { class: 'row mt20', style: 'justify-content:flex-end' },
         h('button', { class: 'btn primary', id: 'stSave' }, '保存设置')));
 
@@ -900,9 +1048,15 @@ function renderSettings() {
         speech_rate: parseFloat($('#stRate').value) || 0.85,
         auto_play: $('#stAuto').checked ? '1' : '0',
         show_pos: $('#stPos').checked ? '1' : '0',
+        ai_enabled: $('#stAiOn').checked ? '1' : '0',
+        ai_base_url: $('#stAiUrl').value.trim(),
+        ai_model: $('#stAiModel').value.trim(),
         tiers: picked
       };
       S.preferReal = $('#stReal').checked;
+      // API Key 单独处理：留空表示「不改动」，避免把已存的覆盖成空串
+      var aiKey = $('#stAiKey').value.trim();
+      if (aiKey) patch.ai_key = aiKey;
       api('/api/settings', { method: 'POST', body: patch }).then(function () {
         toast('设置已保存');
         return refreshBoot().then(function () { go('today'); });
@@ -950,6 +1104,16 @@ document.addEventListener('click', function (e) {
     if (mrow) mrow.setAttribute('data-open', mrow.getAttribute('data-open') === '1' ? '0' : '1');
     return;
   }
+  // 折叠区（深度解析等）
+  var fh = e.target.closest ? e.target.closest('.fold-head') : null;
+  if (fh) {
+    var fold = fh.closest('.fold');
+    if (fold) fold.setAttribute('data-open', fold.getAttribute('data-open') === '1' ? '0' : '1');
+    return;
+  }
+  // AI 助记
+  var ai = e.target.closest ? e.target.closest('[data-ai]') : null;
+  if (ai) { runAi(ai.getAttribute('data-ai'), ai.id === 'aiBtn'); return; }
   var t = e.target.closest ? e.target.closest('[data-go]') : null;
   if (t) { go(t.getAttribute('data-go')); return; }
   var a = e.target.closest ? e.target.closest('[data-audio]') : null;

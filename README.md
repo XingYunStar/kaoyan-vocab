@@ -29,6 +29,7 @@
 ```bash
 cd kaoyan-vocab
 python fetch_data.py      # 首次：下载第三方数据（音标 / 词典 / 例句，约 74 MB）
+python fetch_extras.py    # 可选：下载深度助记解析 + 助记插图（约 515 MB）
 python import_data.py     # 建库：词表 + 音标 + 词性释义 + 例句 → SQLite
 python app.py             # 启动，浏览器打开 http://127.0.0.1:5178
 ```
@@ -131,6 +132,51 @@ turn  /tɜːn/
 他设法及时到達那里了。      ->  他设法及时到达那里了。
 ```
 
+## 助记
+
+学习卡上的助记分三层，从轻到重：
+
+| 层 | 内容 | 来源 | 覆盖 |
+|---|---|---|---|
+| 1 | **词根词缀拆解**（前缀 + 词根 + 后缀） | 项目自带 `mnemonic.py`，规则生成 | 62% |
+| 2 | **深度解析**：词源、词缀衍生、文化背景 | [vxiaozhi 词库](https://github.com/vxiaozhi/vocabulary-book-by-deepseek) | **99.5%**（5371 / 5398） |
+| 3 | **AI 助记**：点按钮让大模型给 4-6 种角度的助记 | 你自己配的模型接口 | 按需 |
+
+另外配 **助记插图** —— 每张图都是为这个单词单独生成的场景图（1024×576 起），配上「图意」说明，把抽象词义变成具体画面。
+覆盖 **99.4%**（5363 / 5398 词），核心高频梯队为 100%；点图可放大看原图。
+
+### 助记数据怎么来
+
+```bash
+python fetch_extras.py            # 走 ghproxy.net 镜像
+python fetch_extras.py --direct   # VPN 已开：直连，实测快 4 倍
+python fetch_extras.py --proxy http://127.0.0.1:7890
+```
+
+- 先用 git trees API 取远端完整清单，再按名单精确下载，不做 404 试探
+- 断点续传：已存在的文件自动跳过，随时可重跑
+- 默认 8 并发（`--workers 16` 更快）；本轮实测：新增 8666 个文件、跳过 2068 个、0 失败，
+  共 515 MB，直连 16 并发耗时约 29 分钟（走镜像约慢 3-4 倍）
+- 助记文本同时是**深度解析**的来源：一篇 markdown 会按 `### 标题` 拆成
+  分析词义 / 列举例句 / 词根分析 / 词缀分析 / 文化背景等小节，
+  卡片上先露「词根分析 / 词缀分析」，其余收进「完整解析」折叠区
+
+### AI 助记
+
+学习卡上有「让 AI 给几种助记」按钮，点了会调你配置的模型，返回**多个角度的助记**
+（词根词缀 / 联想 / 谐音 / 词源典故 / 场景画面 / 形近辨析），不是笼统的一句解释。
+
+在 **设置 → AI 助记** 里填：
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| 启用 | 开 | 关掉后不调接口，卡片上仍保留按钮 |
+| API 地址 | `https://api.deepseek.com/v1` | 任何 OpenAI 兼容接口，换成对应的 `/v1` |
+| 模型 | `deepseek-chat` | |
+| API Key | 空 | 只存本地 `data/vocab.db`；**接口不回显**，留空表示不修改 |
+
+生成结果会落库缓存（`words.ai_mnemonic`），下次看同一个词不再消耗额度，按钮变成「重新生成」。
+
 ## 核心机制
 
 ### 三轮制
@@ -215,6 +261,8 @@ turn  /tɜːn/
 | GET | `/api/dashboard` | 仪表板全部数据 |
 | GET | `/api/browse` | 分页检索词库 |
 | POST | `/api/enrich/<id>` | 拉取英式音标与真人发音 |
+| GET | `/imgs/<路径>` | 助记插图（本地 `data/word_imgs/`） |
+| POST | `/api/ai-mnemonic` | 调大模型生成多角度助记，结果落库缓存 |
 | GET/POST | `/api/settings` | 读写设置 |
 | GET | `/api/export` | 导出学习记录 |
 | POST | `/api/reset` | 清空进度 / 全部数据 |
@@ -246,11 +294,13 @@ kaoyan-vocab/
 ├─ app.py            后端：路由与 11 个 API（业务逻辑都在这）
 ├─ liteweb.py        纯标准库 Web 微框架（Flask 子集 API，让项目 0 依赖）
 ├─ srs.py            间隔重复调度、遗忘曲线、每日计划
-├─ mnemonic.py       词根词缀助记引擎
+├─ mnemonic.py       词根词缀助记引擎（规则生成）
+├─ mnemonic_ext.py   外部助记解析（markdown 按标题拆节）
 ├─ ecdict.py         ECDICT 词性释义解析（流式扫描 66MB CSV）
 ├─ examples.py       例句挑选（短句优先 + 受控词形变化 + 命中词形）
 ├─ trad2simp.py      繁简对照表（618 对，导入时把繁体译文转简体）
 ├─ fetch_data.py     下载第三方数据（约 74 MB，纯标准库）
+├─ fetch_extras.py   下载助记解析与插图（约 515 MB，支持直连/代理/镜像）
 ├─ import_data.py    建库脚本（词表 + cmudict + ECDICT + 例句 → SQLite）
 ├─ start.bat         Windows 一键启动（自动挑 Python，≥3.9）
 ├─ .gitignore        排除个人学习数据与第三方大文件
@@ -259,7 +309,9 @@ kaoyan-vocab/
 │  ├─ vocab.db          SQLite 数据库（全部学习记录，不进版本库）
 │  ├─ cmudict.dict      音标源数据（3.6 MB，fetch_data.py 下载）
 │  ├─ ecdict.csv        词性释义源数据（66 MB，下载）
-│  └─ cmn.txt           英汉句对源数据（4.6 MB，下载）
+│  ├─ cmn.txt           英汉句对源数据（4.6 MB，下载）
+│  ├─ mnemonics/        每词一个 json 的深度助记解析（15.5 MB / 5371 个，下载）
+│  └─ word_imgs/        助记插图（511 MB / 5363 张，下载）
 ├─ docs/
 │  └─ 考研英语真题高频词汇表.md   词表的人读版本
 └─ static/
@@ -267,6 +319,7 @@ kaoyan-vocab/
    ├─ style.css      白/夜双主题 + 移动端适配
    └─ app.js
 ```
+
 ## 许可与致谢
 
 代码部分由本项目作者编写。**数据来自以下第三方项目，版权归各自作者所有**，使用时请遵守对应许可：
@@ -277,6 +330,7 @@ kaoyan-vocab/
 | 音标 | [cmusphinx/cmudict](https://github.com/cmusphinx/cmudict) | BSD-2-Clause |
 | 词性释义 | [skywind3000/ECDICT](https://github.com/skywind3000/ECDICT) | MIT（代码）/ CC BY-SA 3.0（数据） |
 | 例句 | [Tatoeba](https://tatoeba.org/)（经 [manythings.org](https://www.manythings.org/anki/) 打包） | CC BY 2.0 FR |
+| 深度助记 + 助记插图 | [vxiaozhi/vocabulary-book-by-deepseek](https://github.com/vxiaozhi/vocabulary-book-by-deepseek) | Apache-2.0 |
 
 > 词表来源是 **CC BY-NC-SA 4.0**：可自由使用与再分发，但**不得用于商业用途**，衍生作品需同许可共享。
 > 若要把本项目用于商业场景，需要先替换掉这份词表与由它派生的数据。

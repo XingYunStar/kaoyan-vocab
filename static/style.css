@@ -294,6 +294,7 @@ label.fld small { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
 .chip {
   font-size: 12.5px; padding: 4px 11px; border-radius: 20px;
   background: var(--bg-soft); color: var(--text-2);
+  overflow-wrap: anywhere; max-width: 100%;
 }
 .chip.acc { background: var(--accent-bg); color: var(--accent); }
 /* 例句：命中词高亮 */
@@ -344,6 +345,7 @@ label.fld small { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
   background: var(--surface-2); border: 1px solid var(--border);
 }
 .mn h5 { margin: 0 0 9px; font-size: 12px; color: var(--muted); letter-spacing: .8px; font-weight: 600; }
+.mn > div:not([class]) { display: flex; flex-wrap: wrap; }   /* 同根词族/形近词 chips 行：强制换行 */
 .mn .breakdown { font-family: var(--font-mono); font-size: 15px; margin-bottom: 10px; color: var(--text); }
 .mn .breakdown b { color: var(--accent); font-weight: 600; }
 .mn ul { margin: 0; padding-left: 17px; font-size: 13.5px; color: var(--text-2); }
@@ -354,6 +356,63 @@ label.fld small { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
   width: 100%; font-family: var(--font-en); font-size: 26px;
   padding: 12px 16px; letter-spacing: 1px;
 }
+/* ---- 助记插图 ---- */
+.mn-imgbox { margin-top: 18px; }
+.mn-img {
+  display: block; width: 100%; max-width: 340px;
+  border-radius: 10px; border: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.mn-imgcap {
+  margin-top: 8px; max-width: 340px; padding-left: 12px;
+  border-left: 2px solid var(--border-2);
+  font-size: 12.5px; line-height: 1.65; color: var(--text-2);
+}
+
+/* ---- 外部深度解析（可折叠）---- */
+.mn-ext .ext-sec { margin-top: 11px; }
+.mn-ext .ext-sec:first-of-type { margin-top: 2px; }
+.mn-ext .ext-title {
+  font-size: 12px; font-weight: 650; letter-spacing: .3px;
+  color: var(--accent); margin-bottom: 4px;
+}
+.mn-ext .ext-body { font-size: 13.5px; line-height: 1.72; color: var(--text-2); }
+.mn-ext .ext-body p { margin: 0 0 5px; }
+.mn-ext .ext-body ul { margin: 0 0 6px; padding-left: 18px; }
+.mn-ext .ext-body li { margin: 2px 0; }
+.mn-ext .ext-body b { color: var(--text); font-weight: 650; }
+
+.fold > .fold-body { display: none; }
+.fold[data-open="1"] > .fold-body { display: block; }
+.fold .t-less { display: none; }
+.fold[data-open="1"] .t-more { display: none; }
+.fold[data-open="1"] .t-less { display: inline; }
+.fold > .fold-head {
+  display: block; margin: 10px 0 0; padding: 0;
+  border: 0; background: transparent; cursor: pointer;
+  font-size: 12px; color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.fold > .fold-head:hover { color: var(--accent-2); }
+
+/* ---- AI 助记 ---- */
+.mn-ai .ai-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-result { margin-top: 10px; }
+.ai-kind { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; }
+.ai-kind .ai-type {
+  flex: none; min-width: 68px; text-align: center;
+  font-size: 11.5px; font-weight: 650;
+  padding: 2px 9px; border-radius: 6px;
+  background: var(--ok-bg); color: var(--ok);
+}
+.ai-kind .ai-text { font-size: 13.5px; line-height: 1.68; color: var(--text); }
+.ai-err { font-size: 12.5px; line-height: 1.6; color: var(--bad); padding: 4px 0; }
+
+/* ---- 设置页：AI 配置 ---- */
+.ai-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ai-grid .full { grid-column: 1 / -1; }
+
 .spell-box .fb { margin-top: 10px; font-size: 14px; min-height: 22px; }
 .spell-box .fb.ok { color: var(--ok); }
 .spell-box .fb.no { color: var(--bad); }
@@ -507,6 +566,7 @@ table.tbl .freq { font-family: var(--font-mono); font-size: 12px; color: var(--m
   .ex-zh { font-size: 13px; }
 
   .grid { gap: 12px; }
+  .ai-grid { grid-template-columns: 1fr; }   /* 设置页的 AI 表单：窄屏改单列 */
   .card.pad { padding: 16px 14px; }
   .modal { padding: 18px 16px; }
   .modal-bg { padding: 12px; }

@@ -26,6 +26,7 @@ import srs
 
 DB_PATH = os.path.join(HERE, "data", "vocab.db")
 STATIC = os.path.join(HERE, "static")
+IMAGE_DIR = os.path.join(HERE, "data", "word_imgs")   # 助记插图（fetch_extras.py 下载）
 
 app = Flask(__name__, static_folder=None)
 app.json.ensure_ascii = False
@@ -56,7 +57,7 @@ def get_settings():
             s[k] = int(float(s.get(k, 0))) if k != "speech_rate" else float(s.get(k, 0.85))
         except Exception:
             pass
-    for k in ("auto_play", "skip_basic", "show_pos"):
+    for k in ("auto_play", "skip_basic", "show_pos", "ai_enabled"):
         s[k] = str(s.get(k, "1")) in ("1", "true", "True")
     for k in ("tiers", "graduation"):
         try:
@@ -126,6 +127,21 @@ def ensure_round(word_id, rnd):
                         (word_id, rnd)).fetchone()
 
 
+def image_path(word):
+    """助记插图的本地路径（按首字母分子目录）。"""
+    if not word:
+        return None
+    w = str(word).strip()
+    if not w or " " in w:
+        return None
+    return os.path.join(IMAGE_DIR, w[0].lower(), w + ".jpg")
+
+
+def has_image(word):
+    p = image_path(word)
+    return bool(p) and os.path.isfile(p)
+
+
 def word_progress(word_id, rounds):
     """返回该词每一轮的状态，并判断总体状态。"""
     rows = {r["round"]: dict(r) for r in
@@ -172,6 +188,18 @@ def row_to_card(w, prog=None):
         d["examples"] = json.loads(raw_ex) if raw_ex else []
     except Exception:
         d["examples"] = []
+    # 外部深度助记（词根/词缀/词源等分节）+ 是否有助记插图
+    raw_mn = d.pop("mnemonic_ext", None)
+    try:
+        d["mnemonic_ext"] = json.loads(raw_mn) if raw_mn else None
+    except Exception:
+        d["mnemonic_ext"] = None
+    raw_ai = d.pop("ai_mnemonic", None)
+    try:
+        d["ai_mnemonic"] = json.loads(raw_ai) if raw_ai else None
+    except Exception:
+        d["ai_mnemonic"] = None
+    d["has_image"] = has_image(d.get("word"))
     if prog:
         d["round"] = prog["round"]
         d["state"] = prog["state"]
@@ -212,6 +240,18 @@ def no_cache(resp):
 
 
 # ----------------------------------------------------------------- 路由：基础
+@app.get("/imgs/<path:path>")
+def word_image(path):
+    """助记插图。只允许 data/word_imgs 下的相对路径，挡掉目录穿越。"""
+    safe = os.path.normpath(str(path)).replace("\\", "/")
+    if safe.startswith("..") or safe.startswith("/") or ":" in safe:
+        return jsonify({"error": "bad path"}), 400
+    resp = send_from_directory(IMAGE_DIR, safe)
+    # 图片是静态资源且体积大，长缓存；找不到就 404 让前端静默隐藏
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
+
+
 @app.get("/api/bootstrap")
 def api_bootstrap():
     s = get_settings()
@@ -413,6 +453,17 @@ def api_word(wid):
         w["examples"] = json.loads(raw_ex) if raw_ex else []
     except Exception:
         w["examples"] = []
+    raw_mn = w.pop("mnemonic_ext", None)
+    try:
+        w["mnemonic_ext"] = json.loads(raw_mn) if raw_mn else None
+    except Exception:
+        w["mnemonic_ext"] = None
+    raw_ai = w.pop("ai_mnemonic", None)
+    try:
+        w["ai_mnemonic"] = json.loads(raw_ai) if raw_ai else None
+    except Exception:
+        w["ai_mnemonic"] = None
+    w["has_image"] = has_image(w.get("word"))
 
     fam, similar = family_and_similar(w)
     mem = mn.split_mnemonic(w["word"], w["meaning"], w["collocation"],
@@ -677,9 +728,117 @@ def api_enrich(wid):
     return jsonify({"ok": True, "cached": False, "word": dict(w)})
 
 
+AI_SYSTEM_PROMPT = """你是考研英语单词助记专家。用户给你一个单词及其信息，你要给出多种不同角度的助记。
+只输出 JSON，不要任何解释文字、不要 markdown 代码块。格式：
+{"kinds":[{"type":"词根词缀","content":"..."},{"type":"联想","content":"..."},{"type":"谐音","content":"..."},{"type":"词源典故","content":"..."},{"type":"场景画面","content":"..."},{"type":"形近辨析","content":"..."}]}
+要求：
+1. 每个 content 只写 1-2 句中文，要具体、可画面化，避免"多加练习就能记住"这类空话；
+2. 至少给 4 种，最多 6 种；词根词缀不适用就省掉这条，谐音不贴切就不要硬凑；
+3. 不要复述释义本身；
+4. kind 的 type 用上面的中文标签。"""
+
+
+def extract_json(text):
+    """模型偶尔会把 JSON 包在代码块或说明文字里，这里只截取最外层对象。"""
+    if not text:
+        return None
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split(chr(10), 1)[-1]
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        return json.loads(t[i:j + 1])
+    except Exception:
+        return None
+
+
+@app.post("/api/ai-mnemonic")
+def api_ai_mnemonic():
+    """调用用户配置的大模型，生成多角度助记；结果落库缓存。"""
+    d = request.get_json(force=True) or {}
+    wid = int(d.get("word_id") or 0)
+    force = bool(d.get("refresh"))
+    w = db().execute("SELECT * FROM words WHERE id=?", (wid,)).fetchone()
+    if not w:
+        return jsonify({"ok": False, "error": "找不到这个单词"}), 404
+
+    cached = w["ai_mnemonic"] if "ai_mnemonic" in w.keys() else None
+    if not force and cached:
+        try:
+            return jsonify({"ok": True, "cached": True, "kinds": json.loads(cached)})
+        except Exception:
+            pass
+
+    s = get_settings()
+    if not s.get("ai_enabled"):
+        return jsonify({"ok": False, "error": "AI 助记未启用，请到「设置」里打开并填写 API Key"}), 400
+    key = (s.get("ai_key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "还没填写 API Key，请到「设置 → AI 助记」里配置"}), 400
+
+    base = (s.get("ai_base_url") or "https://api.deepseek.com/v1").rstrip("/")
+    model = s.get("ai_model") or "deepseek-chat"
+    lines = ["单词：" + w["word"], "释义：" + (w["meaning"] or "")]
+    if w["pos_primary"]:
+        lines.append("主词性：" + w["pos_primary"])
+    if w["collocation"]:
+        lines.append("真题搭配：" + w["collocation"])
+    if w["tier"]:
+        lines.append("词频梯队：" + w["tier"])
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": AI_SYSTEM_PROMPT},
+                     {"role": "user", "content": chr(10).join(lines)}],
+        "temperature": 0.85,
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        base + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + key,
+                 "User-Agent": "kaoyan-vocab/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8")[:200]
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "模型接口返回 %s：%s" % (e.code, detail)}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": "调用失败：%s" % e}), 502
+
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except Exception:
+        return jsonify({"ok": False, "error": "模型返回结构异常"}), 502
+    parsed = extract_json(content)
+    if not parsed or not parsed.get("kinds"):
+        return jsonify({"ok": False, "error": "模型没有返回可用的助记", "raw": content[:400]}), 502
+
+    kinds = [{"type": str(k.get("type") or "助记"), "content": str(k.get("content") or "").strip()}
+             for k in parsed["kinds"] if str(k.get("content") or "").strip()][:6]
+    db().execute("UPDATE words SET ai_mnemonic=?, ai_mnemonic_at=? WHERE id=?",
+                 (json.dumps(kinds, ensure_ascii=False), srs.iso(srs.now()), wid))
+    db().commit()
+    return jsonify({"ok": True, "cached": False, "kinds": kinds, "model": model})
+
+
 @app.get("/api/settings")
 def api_get_settings():
-    return jsonify(get_settings())
+    s = get_settings()
+    # API Key 不回显给前端，只告诉它「有没有配」
+    s["ai_key_set"] = bool((s.get("ai_key") or "").strip())
+    s["ai_key"] = ""
+    return jsonify(s)
 
 
 @app.post("/api/settings")

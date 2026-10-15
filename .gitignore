@@ -12,6 +12,12 @@ data/cmn.txt
 data/*.zip
 data/_about.txt
 
+# ------------------------------------------------- 外部助记资源（约 500 MB）
+# 深度助记解析 + 助记插图，来自 vxiaozhi/vocabulary-book-by-deepseek（Apache-2.0）
+# 用 python fetch_extras.py 下载（VPN 开启时加 --direct 快 4 倍）
+data/mnemonics/
+data/word_imgs/
+
 # ---------------------------------------------------------------- Python
 __pycache__/
 *.py[cod]
